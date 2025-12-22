@@ -5,4 +5,3 @@ altair
 plotly
 openpyxl
 openai
-textwrap
