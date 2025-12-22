@@ -332,54 +332,79 @@ def format_num(x: float) -> str:
     return f"{x:,.0f}"
 
 # --- IA FUNCTIONALITY ---
-def ai_answer(df: pd.DataFrame, question: str) -> str:
-    if not question or question.strip() == "":
-        return "Escribe una pregunta sobre los indicadores para poder responderte."
-    if df.empty:
-        return "No hay datos con los filtros actuales."
-    if OpenAI is None:
-        return "SDK OpenAI no instalado."
+# --- IA FUNCTIONALITY OPTIMIZED ---
 
-    api_key = "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"
-    if not api_key:
-        return "Falta API Key."
+@st.cache_resource
+def get_ai_client():
+    """Inicializa el cliente una sola vez y lo mantiene en memoria."""
+    # RECOMENDACIÓN: Usa st.secrets en lugar de hardcodear la key en producción
+    api_key = "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"
+    return OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
 
-    try:
-        client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
-    except Exception as exc:
-        return f"Error cliente IA: {exc}"
-
-    schema = ", ".join(df.columns)
-    sample = df.to_dict(orient="records")
-    resumen = {
-        "n_indicadores": int(df["Indicador"].nunique()),
-        "n_ejes": int(df["Eje"].nunique()),
-        "anios": sorted(df["Año"].unique()),
-        "componentes": sorted(df["Componente"].unique()),
-    }
-    contexto = {"schema": schema, "resumen": resumen, "sample": sample}
+def get_lean_csv(df: pd.DataFrame) -> str:
+    """
+    Genera un CSV ligero solo con las columnas críticas para la IA.
+    Reduce tokens y latencia drásticamente.
+    """
+    cols_to_keep = ["Indicador", "Componente", "Año", "Valor", "Unidad", "score_normalizado"]
+    # Filtramos solo columnas que existen
+    valid_cols = [c for c in cols_to_keep if c in df.columns]
     
+    # Tomamos una muestra si es demasiado grande, o el total si es manejable
+    # Para dashboards KPI, usualmente se puede enviar todo, pero eliminamos duplicados técnicos
+    df_lean = df[valid_cols].drop_duplicates()
+    return df_lean.to_csv(index=False)
+
+def stream_ai_answer(df: pd.DataFrame, question: str):
+    """
+    Generador que devuelve la respuesta en trozos (streaming).
+    """
+    client = get_ai_client()
+    if not client:
+        yield "Error: Cliente OpenAI no inicializado."
+        return
+
+    # 1. Preparar datos optimizados
+    csv_data = get_lean_csv(df)
+
+    system_instruction = """
+    Eres un Analista Senior de Datos en GRUPO FARO.
+    Responde basándote EXCLUSIVAMENTE en los datos CSV proporcionados.
+    
+    Reglas:
+    1. Sé conciso y directo.
+    2. Usa formato Markdown para tablas o negritas.
+    3. Si no está en los datos, di: "No tengo información sobre eso en el tablero actual".
+    4. Analiza tendencias y scores si te preguntan por desempeño.
+    """
+
     user_prompt = f"""
-    CONTEXT0: {contexto}
-    PREGUNTA: {question}
-    INSTRUCCIONES: Responde a detalle usando SOLO el contexto.
-    Habla como analista de negocios, responde unicamente sobre el set de datos que te comparto, si no encuentras la respuesta responde que no la sabes. No hagas suposiciones. No inventes datos.
-    RESPUESTA: quiero una respuesta clara y concisa, sin usar calificativos como extremo, mucho, poco basada en los datos proporcionados. Datos y Hechos.
+    DATOS (CSV Simplificado):
+    {csv_data}
+
+    PREGUNTA: "{question}"
     """
 
     try:
-        resp = client.chat.completions.create(
-            model="nvidia/nemotron-3-nano-30b-a3b:free",
+        stream = client.chat.completions.create(
+            model="xiaomi/mimo-v2-flash:free", # O usa "google/gemini-2.0-flash-exp:free" que suele ser más rápido
             messages=[
-                {"role": "system", "content": "Analista de FARO. Responde basado en datos estrictos."},
+                {"role": "system", "content": system_instruction},
                 {"role": "user", "content": user_prompt},
             ],
-            stream=False,
+            stream=True, # <--- CLAVE: Habilitar streaming
             temperature=0.1,
         )
-        return resp.choices[0].message.content
-    except Exception as exc:
-        return f"Error IA: {exc}"
+        
+        for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
+
+    except Exception as e:
+        yield f"⚠️ Error de conexión con la IA: {str(e)}"
+
+# --- MODIFICACIÓN EN EL HEADER / UI ---
+# Busca la sección donde tenías "Header Principal" y reemplázala con esto:
 
 # --- CARGA DATOS ---
 try:
@@ -415,18 +440,46 @@ with st.sidebar:
 filtered = data.copy()
 
 # --- HEADER PRINCIPAL ---
+# --- HEADER PRINCIPAL CON CHATBOT OPTIMIZADO ---
 col_head1, col_head2 = st.columns([3, 1])
+
 with col_head1:
     st.title("Indicadores Estratégicos")
     st.markdown(f"**Vista:** {page}")
+
 with col_head2:
-    # Mini widget de IA
+    # Inicializar historial de chat si no existe
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
     with st.popover("🤖 Asistente IA", use_container_width=True):
-        st.caption("¿En qué puedo ayudarte?")
-        user_q = st.text_input("Tu pregunta...", key="ai_q")
-        if user_q:
-            with st.spinner("Analizando..."):
-                st.info(ai_answer(data, user_q))
+        st.caption("Pregunta sobre los datos actuales...")
+        
+        # Mostrar historial (Opcional: Si quieres que recuerde la conversación anterior)
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        # Input de usuario
+        if prompt := st.chat_input("Ej: ¿Cuál es el peor indicador del 2025?"):
+            # 1. Mostrar pregunta usuario
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            # 2. Generar respuesta con Streaming
+            with st.chat_message("assistant"):
+                # Usamos st.write_stream para renderizar tiempo real (Streamlit 1.32+)
+                # Si tienes una versión vieja de streamlit usa st.empty() en bucle
+                response = st.write_stream(stream_ai_answer(filtered, prompt))
+            
+            # 3. Guardar respuesta en historial
+            st.session_state.messages.append({"role": "assistant", "content": response})
+
+            # Botón para limpiar
+            if st.button("Borrar Chat"):
+                st.session_state.messages = []
+                st.rerun()
 
 st.markdown("---")
 
