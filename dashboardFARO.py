@@ -40,7 +40,7 @@ def get_short_names(unique_indicators: list) -> dict:
     if OpenAI is None:
         return cleaned_map
         
-    api_key = "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" # Tu API Key
+    api_key = st.secrets["OPENROUTER_API_KEY"] Tu API Key
     if not api_key:
         return cleaned_map
 
@@ -332,13 +332,12 @@ def format_num(x: float) -> str:
     return f"{x:,.0f}"
 
 # --- IA FUNCTIONALITY ---
-# --- IA FUNCTIONALITY OPTIMIZED ---
 
 @st.cache_resource
 def get_ai_client():
     """Inicializa el cliente una sola vez y lo mantiene en memoria."""
     # RECOMENDACIÓN: Usa st.secrets en lugar de hardcodear la key en producción
-    api_key = "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"
+    api_key = st.secrets["OPENROUTER_API_KEY"]
     return OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
 
 def get_lean_csv(df: pd.DataFrame) -> str:
