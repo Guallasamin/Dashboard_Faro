@@ -40,7 +40,7 @@ def get_short_names(unique_indicators: list) -> dict:
     if OpenAI is None:
         return cleaned_map
         
-    api_key = "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" # Tu API Key
+    api_key = "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" # Tu API Key
     if not api_key:
         return cleaned_map
 
