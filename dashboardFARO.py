@@ -436,7 +436,7 @@ def stream_ai_answer(df: pd.DataFrame, question: str):
 
     try:
         stream = client.chat.completions.create(
-            model="xiaomi/mimo-v2-flash:free", # O usa "google/gemini-2.0-flash-exp:free" que suele ser más rápido
+            model="tngtech/deepseek-r1t2-chimera:free",
             messages=[
                 {"role": "system", "content": system_instruction},
                 {"role": "user", "content": user_prompt},
