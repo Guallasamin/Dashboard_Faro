@@ -5,10 +5,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-import re # Asegúrate de tener esto al inicio del script
+import re
 
-
-# Configuración de página PRIMERO
 st.set_page_config(
     page_title="Herramienta de Seguimiento FARO", 
     layout="wide", 
@@ -28,50 +26,17 @@ def get_short_names(unique_indicators: list) -> dict:
     Usa IA para acortar nombres de indicadores. 
     Si falla o no hay API Key, usa una limpieza simple por Regex.
     """
-    # 1. Fallback simple (Limpieza manual por si no hay IA)
     cleaned_map = {}
     import re
     for ind in unique_indicators:
-        # Quita "1.1.1 " del inicio y deja el resto
         simple = re.sub(r'^\d+(\.\d+)*\s*', '', ind)
-        # Toma las primeras 5 palabras
         short = " ".join(simple.split()[:5])
         cleaned_map[ind] = short
-
-    # 2. Intento con IA
-    if OpenAI is None:
-        return cleaned_map
-        
-    api_key = st.secrets["OPENROUTER_API_KEY"]
-    if not api_key:
-        return cleaned_map
-
-    try:
-        client = OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
-        
-        # Preparamos el prompt en lote para ahorrar tokens
-        prompt_text = "Genera un nombre muy corto (max 4 palabras) y descriptivo para cada indicador financiero/KPI. Elimina códigos numéricos. Responde SOLO en formato JSON {original: corto}."
-        prompt_text += f"\nLista: {unique_indicators}"
-
-        resp = client.chat.completions.create(
-            model="nvidia/nemotron-3-nano-30b-a3b:free", # Modelo gratuito/barato
-            messages=[
-                {"role": "system", "content": "Eres un experto en dashboards. Resumes textos largos en etiquetas cortas."},
-                {"role": "user", "content": prompt_text}
-            ],
-            temperature=0.1,
-            response_format={"type": "json_object"} 
-        )
-        import json
-        ai_map = json.loads(resp.choices[0].message.content)
-        # Mezclamos con el fallback por si la IA alucina u olvida alguno
-        cleaned_map.update(ai_map)
-        return cleaned_map
     except Exception as e:
         return cleaned_map
 
 # --- CONSTANTES Y RUTAS ---
-# CAMBIO: Usamos la url raw para que pandas descargue el binario directamente
+
 #DATA_PATH = '/Users/jonathanguallasamin/Downloads/Dashboard_Faro-main/Base de datos.xlsx'
 #DETAILED_DATA_PATH = "/Users/jonathanguallasamin/Downloads/IndicadoresDetalle_Faro.xlsx"
 DETAILED_DATA_PATH = "https://github.com/Guallasamin/Dashboard_Faro/raw/main/IndicadoresDetalle_Faro.xlsx"
@@ -87,10 +52,9 @@ def load_detailed_data(path: str) -> pd.DataFrame:
     2. Extrae el año y limpia el nombre del proyecto.    """
     sheets = ["IE", "EDU", "DSC", "ATDCA", "DAF", "COM"]
     
-    # Diccionario para corregir diferencias entre el nombre de la hoja y el nombre en 'Base de datos.xlsx'
     area_mapping = {
-        "ADTCA": "ATDCA", # Corrección de typo frecuente
-        "DSC": "DCS"      # Corrección de typo frecuente
+        "ADTCA": "ATDCA", 
+        "DSC": "DCS"      
     }
 
     all_projects = []
@@ -109,7 +73,6 @@ def load_detailed_data(path: str) -> pd.DataFrame:
         if "Indicador" not in df.columns:
             continue
         
-        # Rellenar indicadores
         df["Indicador"] = df["Indicador"].ffill().astype(str).str.strip()
         
         # Identificar dinámicamente las columnas de proyectos que tienen AÑO
@@ -593,7 +556,7 @@ def render_level1(df: pd.DataFrame):
     # 1. Selector de Año
     year_opts = sorted(df["Año"].unique())
     idx_2025 = year_opts.index(2025) if 2025 in year_opts else len(year_opts)-1
-    selected_year = st.selectbox("📅 Año Fiscal", year_opts, index=idx_2025)
+    selected_year = st.selectbox("📅 Año", year_opts, index=idx_2025)
     
     # Filtramos por el año seleccionado
     df_year = df[df["Año"] == selected_year].copy()
@@ -629,7 +592,7 @@ def render_level1(df: pd.DataFrame):
         delta=None
     )
     c_kpi2.metric(
-        "Proyectos (Impl. + Transf.)", 
+        "Proyectos", 
         f"{kpi_proyectos:,.0f}", 
         delta="Total Anual"
     )
@@ -650,7 +613,7 @@ def render_level1(df: pd.DataFrame):
     
     col_title, col_filter = st.columns([1, 2])
     with col_title:
-        st.markdown(f"### 🏆 Performance (Detallado)")
+        st.markdown(f"### 🏆 Indicadores")
     
     with col_filter:
         areas_disponibles = sorted([x for x in df_year["Componente"].unique() if x != "Total"])
@@ -793,10 +756,10 @@ def render_level1(df: pd.DataFrame):
                     # Título: Nombre del Proyecto (o del Indicador si es DAF/COM)
                     "<b>%{label}</b><br><br>"
                     
-                    # Línea 1: Nombre del Indicador Padre
+                    # Línea 1: Nombre del Indicador
                     "📌 <b>Indicador:</b> %{customdata[2]}<br>"
                     
-                    # Línea 2: Valor específico del proyecto (o total si es indicador)
+                    # Línea 2: Valor específico del proyecto
                     "📊 <b>Valor:</b> %{customdata[0]:,.0f} %{customdata[1]}"
                     
                     # <extra></extra> oculta el cuadro secundario que dice el nombre del Eje
@@ -820,7 +783,7 @@ def render_level2(df: pd.DataFrame):
         c_filt1, c_filt2, c_filt3 = st.columns([2, 1, 1])
         with c_filt1:
             l2_eje_opts = ["Todos"] + list(GROUPS.keys())
-            l2_eje = st.selectbox("Eje Estratégico", l2_eje_opts, format_func=lambda x: "Todos los Ejes" if x == "Todos" else f"{x}. {GROUPS[x]['title']}")
+            l2_eje = st.selectbox("Indicador", l2_eje_opts, format_func=lambda x: "Todos los Indicadores" if x == "Todos" else f"{x}. {GROUPS[x]['title']}")
         with c_filt2:
             l2_opts = sorted(df["Año"].unique(), reverse=True)
             # Lógica para preseleccionar 2025
@@ -864,7 +827,7 @@ def render_level2(df: pd.DataFrame):
     # ==========================================
     # USA: l2_base_heatmap (Sin filtros de eje/indicador)
     
-    st.subheader("🔥 Intensidad por Eje y Área")
+    st.subheader("🔥 Intensidad por Indicador y Área")
 
     base_heat = (
         l2_base_heatmap[(l2_base_heatmap["Componente"] != "Total")]
