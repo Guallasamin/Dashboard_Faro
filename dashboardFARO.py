@@ -32,7 +32,6 @@ def get_short_names(unique_indicators: list) -> dict:
         simple = re.sub(r'^\d+(\.\d+)*\s*', '', ind)
         short = " ".join(simple.split()[:5])
         cleaned_map[ind] = short
-    except Exception as e:
         return cleaned_map
 
 @st.cache_data(show_spinner=False)
