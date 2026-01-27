@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import re # Asegúrate de tener esto al inicio del script
+
 
 # Configuración de página PRIMERO
 st.set_page_config(
@@ -70,10 +72,87 @@ def get_short_names(unique_indicators: list) -> dict:
 
 # --- CONSTANTES Y RUTAS ---
 # CAMBIO: Usamos la url raw para que pandas descargue el binario directamente
+#DATA_PATH = '/Users/jonathanguallasamin/Downloads/Dashboard_Faro-main/Base de datos.xlsx'
+#DETAILED_DATA_PATH = "/Users/jonathanguallasamin/Downloads/IndicadoresDetalle_Faro.xlsx"
+DETAILED_DATA_PATH = "https://github.com/Guallasamin/Dashboard_Faro/raw/main/IndicadoresDetalle_Faro.xlsx"
 DATA_PATH = "https://github.com/Guallasamin/Dashboard_Faro/raw/main/Base%20de%20datos.xlsx"
-#DATA_PATH = '/Users/jonathanguallasamin/Desktop/Base de datos.xlsx'
 SHEET_NAME = "Totales"
 LOGO_PATH = "https://plataforma.grupofaro.org/pluginfile.php/1/theme_moove/logo/1759441070/logoFARO.png"
+
+@st.cache_data(show_spinner=False)
+def load_detailed_data(path: str) -> pd.DataFrame:
+    """
+    Carga el detalle de proyectos.
+    1. Detecta columnas con formato 'AAAA - Nombre' (ej: '2024 - Proyecto X').
+    2. Extrae el año y limpia el nombre del proyecto.    """
+    sheets = ["IE", "EDU", "DSC", "ATDCA", "DAF", "COM"]
+    
+    # Diccionario para corregir diferencias entre el nombre de la hoja y el nombre en 'Base de datos.xlsx'
+    area_mapping = {
+        "ADTCA": "ATDCA", # Corrección de typo frecuente
+        "DSC": "DCS"      # Corrección de typo frecuente
+    }
+
+    all_projects = []
+
+    try:
+        xls = pd.ExcelFile(path)
+    except Exception:
+        return pd.DataFrame()
+
+    for sheet in sheets:
+        if sheet not in xls.sheet_names:
+            continue
+            
+        df = pd.read_excel(xls, sheet_name=sheet)
+        
+        if "Indicador" not in df.columns:
+            continue
+        
+        # Rellenar indicadores
+        df["Indicador"] = df["Indicador"].ffill().astype(str).str.strip()
+        
+        # Identificar dinámicamente las columnas de proyectos que tienen AÑO
+        # Buscamos columnas que empiecen con 4 dígitos + guión (ej: "2024 - ...")
+        melt_cols = []
+        for col in df.columns:
+            if isinstance(col, str) and re.match(r"^\d{4}\s*-\s*", col):
+                melt_cols.append(col)
+        
+        if not melt_cols:
+            continue
+            
+        # Unpivot (Melt)
+        melted = df.melt(
+            id_vars=["Indicador"], 
+            value_vars=melt_cols,
+            var_name="Raw_Project_Col",
+            value_name="Valor_Proyecto"
+        )
+        
+        # --- LÓGICA DE EXTRACCIÓN DE AÑO ---
+        # Regex: Captura el año (Grupo 1) y el resto del texto (Grupo 2)
+        pattern = r"^(\d{4})\s*-\s*(.+)"
+        extracted = melted["Raw_Project_Col"].str.extract(pattern)
+        
+        melted["Año"] = pd.to_numeric(extracted[0], errors="coerce")
+        melted["Proyecto"] = extracted[1].str.strip() # Nombre limpio sin el año
+        
+        # Filtrar valores > 0 (Solo proyectos que aportan)
+        melted["Valor_Proyecto"] = pd.to_numeric(melted["Valor_Proyecto"], errors='coerce').fillna(0)
+        melted = melted[melted["Valor_Proyecto"] > 0]
+        
+        # Asignar Área Normalizada (Componente)
+        raw_area = sheet
+        melted["Componente"] = area_mapping.get(raw_area, raw_area)
+        
+        # Guardamos solo columnas útiles
+        all_projects.append(melted[["Componente", "Indicador", "Año", "Proyecto", "Valor_Proyecto"]])
+
+    if not all_projects:
+        return pd.DataFrame()
+
+    return pd.concat(all_projects, ignore_index=True)
 
 GROUPS = {
     "1": {"title": "1. Implementar acciones para construir sociedades equitativas", "desc": "Beneficiarios y proyectos"},
@@ -567,131 +646,171 @@ def render_level1(df: pd.DataFrame):
 
     st.markdown("---")
 
-    # --- 3. TREEMAP (CON FILTRO DE ÁREA ESPECÍFICO) ---
+# --- 3. TREEMAP DETALLADO (CORREGIDO: NOMBRES COMPLETOS) ---
     
-    # Columnas para título y filtro alineados
     col_title, col_filter = st.columns([1, 2])
-    
     with col_title:
-        st.markdown(f"### 🏆 Performance")
+        st.markdown(f"### 🏆 Performance (Detallado)")
     
     with col_filter:
-        # Definimos las áreas disponibles en este año
         areas_disponibles = sorted([x for x in df_year["Componente"].unique() if x != "Total"])
-        
-        # Multiselect exclusivo para el Treemap
         selected_areas_tree = st.multiselect(
             "Filtro de Área:",
             options=areas_disponibles,
-            default=areas_disponibles, # Por defecto todas
-            placeholder="Selecciona áreas a visualizar..."
+            default=areas_disponibles,
+            placeholder="Selecciona áreas..."
         )
 
     with st.container():
-        # Lógica de filtrado SOLO para el gráfico
-        if selected_areas_tree:
-            df_tree_filtered = df_year[df_year["Componente"].isin(selected_areas_tree)].copy()
-        else:
-            df_tree_filtered = df_year.copy() # Si borra todo, mostramos todo por seguridad (o podrías mostrar vacío)
+        # 1. Cargar Data Detallada
+        try:
+            df_detail = load_detailed_data(DETAILED_DATA_PATH)
+        except:
+            df_detail = pd.DataFrame()
 
+        # Filtrar detalle por AÑO seleccionado
+        if not df_detail.empty:
+            df_detail = df_detail[df_detail["Año"] == selected_year]
+
+        # 2. Filtrar Data Principal
+        if selected_areas_tree:
+            df_tree_main = df_year[df_year["Componente"].isin(selected_areas_tree)].copy()
+        else:
+            df_tree_main = df_year.copy()
+
+        # 3. Preparar Jerarquías (Eje -> Indicador COMPLETO)
+        
+        # A) Título del Eje
+        df_tree_main["Eje"] = df_tree_main["Indicador"].str.extract(r"^(\d)").fillna("Otros")
+        df_tree_main["Titulo_Eje"] = df_tree_main["Eje"].map(lambda x: GROUPS.get(str(x), {}).get("title", f"Eje {x}"))
+        
+        # B) Nombre del Indicador (NIVEL 2)
+        # CAMBIO: Forzamos el uso de la columna "Indicador" original (la larga)
+        col_nombre = "Indicador" 
+        
         import textwrap
-        
-        # Usamos la columna simplificada si existe
-        col_nombre = "IndicadorSimplificado" if "IndicadorSimplificado" in df_tree_filtered.columns else "Indicador"
-        
-        # Función wrap
-        df_tree_filtered["Indicador_Corto"] = df_tree_filtered[col_nombre].apply(
-            lambda x: "<br>".join(textwrap.wrap(str(x), width=15))
+        # Ajustamos el width a 50 caracteres para que el texto largo se lea bien sin ser una sola linea eterna
+        df_tree_main["Indicador_Visual"] = df_tree_main[col_nombre].apply(
+            lambda x: "<br>".join(textwrap.wrap(str(x), width=50))
         )
+
+        # Agrupar padres usando el Nuevo Nombre Visual
+        df_parents = df_tree_main.groupby(
+            ["Indicador", "Titulo_Eje", "Componente", "Indicador_Visual", "Unidad"], 
+            as_index=False
+        ).agg({
+            "score_normalizado": "mean",
+            "Valor": "sum"
+        })
+
+        # 4. CONSTRUCCIÓN DE LA JERARQUÍA FINAL
+        final_frames = []
+        AREAS_SIN_DETALLE = ["DAF", "COM"]
+
+        # --- A) Áreas CON proyectos ---
+        df_con_proy = df_parents[~df_parents["Componente"].isin(AREAS_SIN_DETALLE)].copy()
         
-        # Agrupación
-        base_tree = (
-            df_tree_filtered.groupby(["Eje", "NombreEje", "Indicador", "Indicador_Corto", "Unidad"], as_index=False)
-            .agg(score_mean=("score_normalizado", "mean"), valor_total=("Valor", "sum"))
-        )
-        base_tree = color_rank(base_tree)
-        
-        if not base_tree.empty:
+        if not df_con_proy.empty:
+            if not df_detail.empty:
+                # Merge por Indicador (Nombre original) y Componente
+                merged = pd.merge(
+                    df_detail, 
+                    df_con_proy, 
+                    on=["Indicador", "Componente"], 
+                    how="inner"
+                )
+                
+                if not merged.empty:
+                    merged["Nivel_3"] = merged["Proyecto"]
+                    merged["Valor_Size"] = merged["Valor_Proyecto"]
+                    merged["Tooltip_Tipo"] = "Proyecto"
+                    final_frames.append(merged)
+                
+                # Check missing
+                check_missing = pd.merge(
+                    df_con_proy,
+                    merged[["Indicador", "Componente"]].drop_duplicates(),
+                    on=["Indicador", "Componente"],
+                    how="left",
+                    indicator=True
+                )
+                missing = check_missing[check_missing["_merge"] == "left_only"].copy()
+                
+                if not missing.empty:
+                    missing["Nivel_3"] = "(Sin proyectos reportados)"
+                    missing["Valor_Size"] = missing["Valor"]
+                    missing["Valor_Proyecto"] = 0
+                    missing["Tooltip_Tipo"] = "Indicador"
+                    missing = missing.drop(columns=["_merge"])
+                    final_frames.append(missing)
+            else:
+                df_con_proy["Nivel_3"] = "(Detalle no disponible)"
+                df_con_proy["Valor_Size"] = df_con_proy["Valor"]
+                df_con_proy["Valor_Proyecto"] = 0
+                df_con_proy["Tooltip_Tipo"] = "Indicador"
+                final_frames.append(df_con_proy)
+
+        # --- B) Áreas SIN detalle (DAF, COM) ---
+        df_sin_proy = df_parents[df_parents["Componente"].isin(AREAS_SIN_DETALLE)].copy()
+        if not df_sin_proy.empty:
+            # Truco visual: Hijo = Padre
+            df_sin_proy["Nivel_3"] = df_sin_proy["Indicador_Visual"]
+            df_sin_proy["Valor_Size"] = df_sin_proy["Valor"]
+            df_sin_proy["Valor_Proyecto"] = df_sin_proy["Valor"]
+            df_sin_proy["Tooltip_Tipo"] = "Indicador Total"
+            final_frames.append(df_sin_proy)
+
+        # 5. GRAFICAR
+# 5. GRAFICAR
+        if final_frames:
+            df_final_tree = pd.concat(final_frames, ignore_index=True)
+            
+            # Limpieza texto Nivel 3 (Proyectos) para la visualización en el cuadro
+            df_final_tree["Nivel_3"] = df_final_tree["Nivel_3"].astype(str).apply(
+                lambda x: "<br>".join(textwrap.wrap(x, width=30)) if len(x) > 30 else x
+            )
+            
+            df_final_tree = color_rank(df_final_tree)
+
             fig = px.treemap(
-                base_tree,
-                path=["NombreEje", "Indicador_Corto"],
-                values="score_mean",
-                color="NombreEje",
+                df_final_tree,
+                path=["Titulo_Eje", "Indicador_Visual", "Nivel_3"],
+                values="score_normalizado", # El tamaño de la caja sigue siendo la importancia (Score)
+                color="Titulo_Eje",
                 color_discrete_sequence=CATEGORICAL_PALETTE,
-                custom_data=["valor_total", "Unidad", "Indicador", "score_mean"]
+                # AQUÍ ESTÁ EL CAMBIO IMPORTANTE EN DATOS:
+                # Pasamos: [0]Valor Específico, [1]Unidad, [2]Nombre Indicador, [3]Tipo (Proyecto/Indicador)
+                custom_data=["Valor_Size", "Unidad", "Indicador_Visual", "Tooltip_Tipo"]
             )
             
             fig.update_traces(
-                root_color="lightgrey", # Botón "Atrás" visual
-                texttemplate=(
-                    "<span style='font-size:18px; font-weight:bold; line-height:1.2'>%{label}</span><br><br>"
-                    "<span style='font-size:15px'>%{customdata[0]:,.0f} %{customdata[1]}</span>"
-                ),
+                root_color="#F3F4F6",
+                maxdepth=2, 
+                texttemplate="<span style='font-size:13px; font-weight:bold'>%{label}</span>",
+                
+                # --- NUEVO TOOLTIP PERSONALIZADO ---
                 hovertemplate=(
-                    "<b style='font-size:16px'>%{customdata[2]}</b><br><br>"
-                    "<span style='font-size:14px'>Valor Real: <b>%{customdata[0]:,.0f} %{customdata[1]}</b></span><br>"
-                    "<span style='font-size:14px'>Score: <b>%{customdata[3]:.1f}/100</b></span>"
-                    "<extra></extra>" 
+                    # Título: Nombre del Proyecto (o del Indicador si es DAF/COM)
+                    "<b>%{label}</b><br><br>"
+                    
+                    # Línea 1: Nombre del Indicador Padre
+                    "📌 <b>Indicador:</b> %{customdata[2]}<br>"
+                    
+                    # Línea 2: Valor específico del proyecto (o total si es indicador)
+                    "📊 <b>Valor:</b> %{customdata[0]:,.0f} %{customdata[1]}"
+                    
+                    # <extra></extra> oculta el cuadro secundario que dice el nombre del Eje
+                    "<extra></extra>"
                 ),
-                textposition="middle center", 
-                textinfo="label+text",
-                marker=dict(
-                    line=dict(width=2, color='white'), 
-                    cornerradius=5 
-                )
+                marker=dict(cornerradius=3)
             )
             
-            fig.update_layout(
-                margin=dict(t=50, l=0, r=0, b=0), # Margen para la barra de navegación
-                height=550, 
-                font=dict(family="Open Sans, sans-serif", size=14),
-                hoverlabel=dict(
-                    bgcolor="white",
-                    font_size=14,
-                    font_family="Open Sans, sans-serif"
-                )
-            )
+            fig.update_layout(height=650, margin=dict(t=30, l=0, r=0, b=0))
             st.plotly_chart(fig, use_container_width=True)
+            
         else:
-            st.info(f"No hay datos para las áreas seleccionadas en {selected_year}")
-
-    # 3. Tendencias
-    st.markdown("### ⏳ Tendencias")
-    eje_opts_lvl1 = list(GROUPS.keys())
-    eje_sel_lvl1 = st.selectbox("Seleccionar Eje", eje_opts_lvl1, format_func=lambda x: f"{x}. {GROUPS[x]['title']}")
-    
-    evol_base = df[df["Eje"] == eje_sel_lvl1].copy()
-    
-    col_nombre_tend = "IndicadorSimplificado" if "IndicadorSimplificado" in evol_base.columns else "Indicador"
-    evol_base["Ind_Corto"] = evol_base[col_nombre_tend]
-
-    # Texto formateado para tooltip
-    evol_base["Detalle_Texto"] = (
-        "- " + evol_base["Ind_Corto"] + ": " + 
-        evol_base["Valor"].apply(lambda x: f"{x:,.0f}")
-    )
-    
-    chart_base = evol_base[evol_base["Componente"] != "Total"].groupby(["Año", "Componente"], as_index=False).agg({
-        "score_normalizado": "mean",
-        "Valor": "sum",
-        "Unidad": "first",
-        "Detalle_Texto": lambda x: "\n".join(x) 
-    })
-    
-    chart_evol = alt.Chart(chart_base).mark_line(point=True, strokeWidth=3).encode(
-        x=alt.X("Año:O", title=""),
-        y=alt.Y("score_normalizado:Q", title="Score"),
-        color=alt.Color("Componente:N", scale=alt.Scale(range=CATEGORICAL_PALETTE)),
-        tooltip=[
-            alt.Tooltip("Año", title="Año Fiscal"),
-            alt.Tooltip("Componente", title="Área"),
-            alt.Tooltip("Valor", title="Total Absoluto", format=",.0f"),
-            alt.Tooltip("Detalle_Texto", title="Desglose de Indicadores")
-        ]
-    ).properties(height=350)
-    
-    st.altair_chart(apply_altair_theme(chart_evol), use_container_width=True)
-
+            st.warning("No se pudo construir la jerarquía.")
+            
 # === NIVEL 2 ===
 def render_level2(df: pd.DataFrame):
     st.markdown("### 📊 Comparativo de Áreas")
